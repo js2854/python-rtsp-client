@@ -3,7 +3,7 @@
 # Author: JiaSongsong
 # Date: 2015-04-09
 
-import sys, re, socket, threading, time, datetime, traceback
+import sys, re, socket, threading, time, traceback
 from optparse import OptionParser
 from netaddr import *
 
@@ -18,12 +18,13 @@ ENABLE_FEC          = False
 TRANSPORT_TYPE_MAP  = {
                         'tcp'           :   'MP2T/TCP;%s;interleaved=0-1,',
                         'tcp_over_rtp'  :   'MP2T/RTP/TCP;%s;interleaved=0-1,',
-                        'udp'           :   'MP2T/UDP;%s;destination=%s;client_port=%s,',                        
+                        'udp'           :   'MP2T/UDP;%s;destination=%s;client_port=%s,',
                         'udp_over_rtp'  :   'MP2T/RTP/UDP;%s;destination=%s;client_port=%s,'
                       }
 
 RTSP_VERSION        = 'RTSP/1.0'
 DEFAULT_USERAGENT   = 'Python Rtsp Client 1.0'
+HEARTBEAT_INTERVAL  = 10 # 10s
 
 LINE_SPLIT_STR      = '\r\n'
 HEADER_END_STR      = LINE_SPLIT_STR*2
@@ -51,10 +52,10 @@ class RTSPClient(threading.Thread):
         self.setDaemon(True)
         self._recv_buf  = ''
         self._sock      = None
-        self._orig_url  = url        
+        self._orig_url  = url
         self._cseq      = 0
         self._session   = ''
-        self._last_cmd  = ''
+        self._cseq_map  = {'GET_PARAMETER':0,'DESCRIBE':0,'SETUP':0,'PLAY':0,'TEARDOWN':0}
         self._server_ip,self._server_port,self._target = self._parse_url(url)
         if not self._server_ip or not self._target:
             PRINT('Invalid url: %s'%url,RED); sys.exit(1)
@@ -74,6 +75,7 @@ class RTSPClient(threading.Thread):
                     self._process_announce(msg)
         except Exception, e:
             PRINT('Error: %s'%e,RED)
+            traceback.print_exc()
         finally:
             self.running = False
             self.playing = False
@@ -102,21 +104,23 @@ class RTSPClient(threading.Thread):
             sys.exit(1)
 
     def recv_msg(self):
-        '''收取一个完整响应消息,sdp字符串或ANNOUNCE通知消息'''
+        '''收取一个完整响应消息或ANNOUNCE通知消息'''
         try:
             while True:
                 if HEADER_END_STR in self._recv_buf: break
-                more = self._sock.recv(2048)            
+                more = self._sock.recv(2048)
                 if not more: break
                 self._recv_buf += more
         except socket.error:
             errno, errstr = sys.exc_info()[:2]
             PRINT('Receive data error: %d-%s'%(errno,errstr),RED)
-        
-        (msg,self._recv_buf) = self._recv_buf.split(HEADER_END_STR,1)
-        content_length = self._get_content_length(msg)
-        msg += HEADER_END_STR + self._recv_buf[:content_length]
-        self._recv_buf = self._recv_buf[content_length:]
+
+        msg = ''
+        if self._recv_buf:
+            (msg,self._recv_buf) = self._recv_buf.split(HEADER_END_STR,1)
+            content_length = self._get_content_length(msg)
+            msg += HEADER_END_STR + self._recv_buf[:content_length]
+            self._recv_buf = self._recv_buf[content_length:]
         return msg
 
     def _get_content_length(self,msg):
@@ -126,22 +130,25 @@ class RTSPClient(threading.Thread):
 
     def _process_response(self,msg):
         '''处理响应消息'''
-        PRINT(msg)
         status,headers,body = self._parse_response(msg)
+        rsp_cseq = int(headers['cseq'])
+        if self._cseq_map['GET_PARAMETER'] != rsp_cseq: PRINT(msg)
         if status == 302:
             self.location = headers['location']
         if status != 200:
-            self.do_teardown()        
-        if self._last_cmd == 'DESCRIBE' and len(body) > 0:
+            self.do_teardown()
+        if self._cseq_map['DESCRIBE'] == rsp_cseq:
             track_id_str = self._parse_track_id(body)
+            print track_id_str
             self.do_setup(track_id_str)
-        elif self._last_cmd == 'SETUP':
+        elif self._cseq_map['SETUP'] == rsp_cseq:
             self._session = headers['session']
             self.do_play(CUR_RANGE,CUR_SCALE)
-        elif self._last_cmd == 'PLAY':
+        elif self._cseq_map['PLAY'] == rsp_cseq:
             self.playing = True
-        elif self._last_cmd == 'TEARDOWN':
-            self.running = False 
+            self.send_heart_beat_msg()
+        elif self._cseq_map['TEARDOWN'] == rsp_cseq:
+            self.running = False
 
     def _process_announce(self,msg):
         '''处理ANNOUNCE通知消息'''
@@ -180,19 +187,19 @@ class RTSPClient(threading.Thread):
     def _next_seq(self):
         self._cseq += 1
         return self._cseq
-    
+
     def _sendmsg(self,method,url,headers):
-        '''发送消息'''        
+        '''发送消息'''
         msg = '%s %s %s'%(method,url,RTSP_VERSION) + LINE_SPLIT_STR
         for (k,v) in headers.items():
             msg += '{0}: {1}{2}'.format(k,v,LINE_SPLIT_STR)
         if self._session:
             msg += 'Session: %s'%self._session + LINE_SPLIT_STR
-        msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR
-        PRINT(msg)
+        msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR        
+        if method != 'GET_PARAMETER': PRINT(msg)
         try:
             self._sock.send(msg)
-            self._last_cmd = method
+            self._cseq_map[method] = self._cseq
         except socket.error:
             errno, errstr = sys.exc_info()[:2]
             PRINT('Send msg error: %s'%errstr, RED)
@@ -206,7 +213,7 @@ class RTSPClient(threading.Thread):
                 transport_str += TRANSPORT_TYPE_MAP[t]%ip_type
             else:
                 transport_str += TRANSPORT_TYPE_MAP[t]%(ip_type,DEST_IP,CLIENT_PORT_RANGE)
-        return transport_str        
+        return transport_str
 
     def do_describe(self):
         headers = {}
@@ -236,6 +243,12 @@ class RTSPClient(threading.Thread):
 
     def do_get_parameter(self):
         self._sendmsg('GET_PARAMETER',self._orig_url,{})
+
+    def send_heart_beat_msg(self):
+        '''定时发送GET_PARAMETER消息保活'''
+        if self.running:
+            self.do_get_parameter()
+            threading.Timer(HEARTBEAT_INTERVAL, self.send_heart_beat_msg).start()
 
 #-----------------------------------------------------------------------
 # Input with autocompletion
@@ -296,7 +309,7 @@ def main(url):
         rtsp.do_teardown()
         print '\n^C received, Exit.'
 
-if __name__ == '__main__':    
+if __name__ == '__main__':
     parser = OptionParser(usage='%prog [options] url')
     parser.add_option('-t','--transport',dest='transport',default='udp_over_rtp',help='Set transport type when SETUP: tcp, udp, tcp_over_rtp, udp_over_rtp[default]')
     parser.add_option('-d','--dest_ip',dest='dest_ip',help='Set dest ip of udp data transmission, default is 127.0.0.1')
@@ -311,7 +324,7 @@ if __name__ == '__main__':
         PRINT('  or "play" with "range" and "scale" parameter, such as "play range:npt=beginning- scale:2"', MAGENTA)
         PRINT('  You can input "exit","teardown" or ctrl+c to quit\n', MAGENTA)
         sys.exit()
-    
+
     if options.transport:   TRANSPORT_TYPE_LIST = options.transport.split(',')
     if options.dest_ip:     DEST_IP = options.dest_ip; print DEST_IP
     if options.client_port: CLIENT_PORT_RANGE = options.client_port
@@ -319,5 +332,5 @@ if __name__ == '__main__':
     if options.arq:         ENABLE_ARQ  = options.arq
     if options.fec:         ENABLE_FEC  = options.fec
     url = args[0]
-    
+
     main(url)
