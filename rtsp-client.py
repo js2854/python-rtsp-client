@@ -243,12 +243,8 @@ class RTSPClient(threading.Thread):
 import readline
 COMMANDS = ['play','range:','scale:','forward','backward','begin','live','teardown','exit']
 def complete(text,state):
-    for cmd in COMMANDS:
-        if cmd.startswith(text):
-            if not state:
-                return cmd
-            else:
-                state -= 1
+    options = [i for i in COMMANDS if i.startswith(text)]
+    return options[state] if state < len(options) else None
 
 def input_cmd():
     readline.set_completer_delims(' \t\n')
