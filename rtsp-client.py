@@ -200,7 +200,7 @@ class RTSPClient(threading.Thread):
     def _get_transport_type(self):
         '''获取SETUP时需要的Transport字符串参数'''
         transport_str = ''
-        ip_type = 'unicast' if IPAddress('192.0.2.1').is_unicast() else 'multicast'
+        ip_type = 'unicast' if IPAddress(DEST_IP).is_unicast() else 'multicast'
         for t in TRANSPORT_TYPE_LIST:
             if t.startswith('tcp'):
                 transport_str += TRANSPORT_TYPE_MAP[t]%ip_type
