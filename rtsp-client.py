@@ -238,6 +238,9 @@ class RTSPClient(threading.Thread):
         headers['Scale'] = scale
         self._sendmsg('PLAY',self._orig_url,headers)
 
+    def do_pause(self):
+        self._sendmsg('PAUSE',self._orig_url,{})
+        
     def do_teardown(self):
         self._sendmsg('TEARDOWN',self._orig_url,{})
 
@@ -257,7 +260,7 @@ class RTSPClient(threading.Thread):
 # Input with autocompletion
 #-----------------------------------------------------------------------
 import readline
-COMMANDS = ['play','range:','scale:','forward','backward','begin','live','teardown','exit']
+COMMANDS = ['play','range:','scale:','pause','forward','backward','begin','live','teardown','exit']
 def complete(text,state):
     options = [i for i in COMMANDS if i.startswith(text)]
     return options[state] if state < len(options) else None
@@ -276,7 +279,9 @@ def exec_cmd(rtsp,cmd):
     global CUR_RANGE,CUR_SCALE
     if cmd in ('exit','teardown'):
         rtsp.do_teardown()
-        return
+    elif cmd == 'pause':
+        CUR_SCALE = 1
+        rtsp.do_pause()
     elif cmd == 'forward':
         if CUR_SCALE < 0: CUR_SCALE = 1
         CUR_SCALE *= 2; CUR_RANGE = 'npt=now-'
@@ -292,8 +297,9 @@ def exec_cmd(rtsp,cmd):
         if m: CUR_RANGE = m.group('range')
         m = re.search(r'scale[:\s]+(?P<scale>[\d\.]+)',cmd)
         if m: CUR_SCALE = int(m.group('scale'))
-
-    rtsp.do_play(CUR_RANGE,CUR_SCALE)
+        
+    if cmd not in ('pause','exit','teardown'):
+        rtsp.do_play(CUR_RANGE,CUR_SCALE)
 
 def main(url):
     rtsp = RTSPClient(url)
@@ -323,7 +329,7 @@ if __name__ == '__main__':
     (options,args) = parser.parse_args()
     if len(args) < 1:
         parser.print_help()
-        PRINT('\n  In running, you can control play by input "forward","backward","begin","live"', MAGENTA)
+        PRINT('\n  In running, you can control play by input "forward","backward","begin","live","pause"', MAGENTA)
         PRINT('  or "play" with "range" and "scale" parameter, such as "play range:npt=beginning- scale:2"', MAGENTA)
         PRINT('  You can input "exit","teardown" or ctrl+c to quit\n', MAGENTA)
         sys.exit()
