@@ -1,8 +1,6 @@
 # python-rtsp-client
 A rtsp client write in python
 
-
-
     Usage: rtsp-client.py [options] url
     
     Options:
@@ -20,6 +18,6 @@ A rtsp client write in python
       -r, --arq             Add "x-zmssRtxSdp:yes" when DESCRIBE
       -f, --fec             Add "x-zmssFecCDN:yes" when DESCRIBE
     
-      In running, you can control play by input "forward","backward","begin","live"
+      In running, you can control play by input "forward","backward","begin","live","pause"
       or "play" with "range" and "scale" parameter, such as "play range:npt=beginning- scale:2"
       You can input "exit","teardown" or ctrl+c to quit
