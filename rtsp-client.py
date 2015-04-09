@@ -3,7 +3,7 @@
 # Author: JiaSongsong
 # Date: 2015-04-09
 
-import sys, re, socket, threading, time, traceback
+import sys, re, socket, threading, time, datetime, traceback
 from optparse import OptionParser
 from netaddr import *
 
@@ -66,6 +66,7 @@ class RTSPClient(threading.Thread):
         self.start()
 
     def run(self):
+        self.send_heart_beat_msg()
         try:
             while self.running:
                 msg = self.recv_msg()
@@ -128,25 +129,27 @@ class RTSPClient(threading.Thread):
         m = re.search(r'[Cc]ontent-length:\s?(?P<len>\d+)',msg,re.S)
         return 0 if m is None else int(m.group('len'))
 
+    def _get_time_str(self):
+        return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+
     def _process_response(self,msg):
         '''处理响应消息'''
         status,headers,body = self._parse_response(msg)
         rsp_cseq = int(headers['cseq'])
-        if self._cseq_map['GET_PARAMETER'] != rsp_cseq: PRINT(msg)
+        if self._cseq_map['GET_PARAMETER'] != rsp_cseq:
+            PRINT(self._get_time_str() + '\n' + msg)
         if status == 302:
             self.location = headers['location']
         if status != 200:
             self.do_teardown()
         if self._cseq_map['DESCRIBE'] == rsp_cseq:
             track_id_str = self._parse_track_id(body)
-            print track_id_str
             self.do_setup(track_id_str)
         elif self._cseq_map['SETUP'] == rsp_cseq:
             self._session = headers['session']
             self.do_play(CUR_RANGE,CUR_SCALE)
         elif self._cseq_map['PLAY'] == rsp_cseq:
-            self.playing = True
-            self.send_heart_beat_msg()
+            self.playing = True            
         elif self._cseq_map['TEARDOWN'] == rsp_cseq:
             self.running = False
 
@@ -196,7 +199,7 @@ class RTSPClient(threading.Thread):
         if self._session:
             msg += 'Session: %s'%self._session + LINE_SPLIT_STR
         msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR        
-        if method != 'GET_PARAMETER': PRINT(msg)
+        if method != 'GET_PARAMETER': PRINT(self._get_time_str() + '\n' + msg)
         try:
             self._sock.send(msg)
             self._cseq_map[method] = self._cseq
