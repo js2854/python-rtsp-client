@@ -9,7 +9,7 @@ from netaddr import *
 
 DEFAULT_SERVER_PORT = 1554
 TRANSPORT_TYPE_LIST = []
-DEST_IP             = '127.0.0.1'
+DEST_IP             = ''
 CLIENT_PORT_RANGE   = '10014-10015'
 NAT_IP_PORT         = ''
 ENABLE_ARQ          = False
@@ -54,12 +54,13 @@ class RTSPClient(threading.Thread):
         self._sock      = None
         self._orig_url  = url
         self._cseq      = 0
-        self._session   = ''
-        self._cseq_map  = {'GET_PARAMETER':0,'DESCRIBE':0,'SETUP':0,'PLAY':0,'TEARDOWN':0}
+        self._session_id= ''
+        self._cseq_map  = {'GET_PARAMETER':0,'DESCRIBE':0,'SETUP':0,'PLAY':0,'PAUSE':0,'TEARDOWN':0}
         self._server_ip,self._server_port,self._target = self._parse_url(url)
         if not self._server_ip or not self._target:
             PRINT('Invalid url: %s'%url,RED); sys.exit(1)
         self._connect_server()
+        self._update_dest_ip()
         self.running    = True
         self.playing    = False
         self.location   = ''
@@ -104,6 +105,13 @@ class RTSPClient(threading.Thread):
             traceback.print_exc()
             sys.exit(1)
 
+    def _update_dest_ip(self):
+        '''如果未指定DEST_IP,默认与RTSP使用相同IP'''
+        global DEST_IP
+        if not DEST_IP:
+            DEST_IP = self._sock.getsockname()[0]
+            PRINT('DEST_IP: %s\n'%DEST_IP, CYAN)
+
     def recv_msg(self):
         '''收取一个完整响应消息或ANNOUNCE通知消息'''
         try:
@@ -146,12 +154,10 @@ class RTSPClient(threading.Thread):
             track_id_str = self._parse_track_id(body)
             self.do_setup(track_id_str)
         elif self._cseq_map['SETUP'] == rsp_cseq:
-            self._session = headers['session']
+            self._session_id = headers['session']
             self.do_play(CUR_RANGE,CUR_SCALE)
         elif self._cseq_map['PLAY'] == rsp_cseq:
-            self.playing = True            
-        elif self._cseq_map['TEARDOWN'] == rsp_cseq:
-            self.running = False
+            self.playing = True
 
     def _process_announce(self,msg):
         '''处理ANNOUNCE通知消息'''
@@ -196,10 +202,10 @@ class RTSPClient(threading.Thread):
         msg = '%s %s %s'%(method,url,RTSP_VERSION) + LINE_SPLIT_STR
         for (k,v) in headers.items():
             msg += '{0}: {1}{2}'.format(k,v,LINE_SPLIT_STR)
-        if self._session:
-            msg += 'Session: %s'%self._session + LINE_SPLIT_STR
-        msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR        
-        if method != 'GET_PARAMETER': PRINT(self._get_time_str() + '\n' + msg)
+        if self._session_id:
+            msg += 'Session: %s'%self._session_id + LINE_SPLIT_STR
+        msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR
+        if method != 'GET_PARAMETER': PRINT(self._get_time_str() + LINE_SPLIT_STR + msg)
         try:
             self._sock.send(msg)
             self._cseq_map[method] = self._cseq
@@ -210,8 +216,11 @@ class RTSPClient(threading.Thread):
     def _get_transport_type(self):
         '''获取SETUP时需要的Transport字符串参数'''
         transport_str = ''
-        ip_type = 'unicast' if IPAddress(DEST_IP).is_unicast() else 'multicast'
+        ip_type = 'unicast' #if IPAddress(DEST_IP).is_unicast() else 'multicast'
         for t in TRANSPORT_TYPE_LIST:
+            if t not in TRANSPORT_TYPE_MAP:
+                PRINT('Error param: %s'%t,RED)
+                sys.exit(1)
             if t.startswith('tcp'):
                 transport_str += TRANSPORT_TYPE_MAP[t]%ip_type
             else:
@@ -240,9 +249,10 @@ class RTSPClient(threading.Thread):
 
     def do_pause(self):
         self._sendmsg('PAUSE',self._orig_url,{})
-        
+
     def do_teardown(self):
         self._sendmsg('TEARDOWN',self._orig_url,{})
+        self.running = False
 
     def do_options(self):
         self._sendmsg('OPTIONS',self._orig_url,{})
@@ -260,7 +270,7 @@ class RTSPClient(threading.Thread):
 # Input with autocompletion
 #-----------------------------------------------------------------------
 import readline
-COMMANDS = ['play','range:','scale:','pause','forward','backward','begin','live','teardown','exit']
+COMMANDS = ['play','range:','scale:','pause','forward','backward','begin','live','teardown','exit','help']
 def complete(text,state):
     options = [i for i in COMMANDS if i.startswith(text)]
     return options[state] if state < len(options) else None
@@ -282,6 +292,8 @@ def exec_cmd(rtsp,cmd):
     elif cmd == 'pause':
         CUR_SCALE = 1
         rtsp.do_pause()
+    elif cmd == 'help':
+        PRINT(play_ctrl_help())
     elif cmd == 'forward':
         if CUR_SCALE < 0: CUR_SCALE = 1
         CUR_SCALE *= 2; CUR_RANGE = 'npt=now-'
@@ -297,8 +309,8 @@ def exec_cmd(rtsp,cmd):
         if m: CUR_RANGE = m.group('range')
         m = re.search(r'scale[:\s]+(?P<scale>[\d\.]+)',cmd)
         if m: CUR_SCALE = int(m.group('scale'))
-        
-    if cmd not in ('pause','exit','teardown'):
+
+    if cmd not in ('pause','exit','teardown','help'):
         rtsp.do_play(CUR_RANGE,CUR_SCALE)
 
 def main(url):
@@ -310,7 +322,7 @@ def main(url):
                 cmd = input_cmd()
                 exec_cmd(rtsp,cmd)
             # 302重定向重新建链
-            if not rtsp.running:
+            if not rtsp.running and rtsp.location:
                 rtsp = RTSPClient(rtsp.location)
                 rtsp.do_describe()
             time.sleep(0.5)
@@ -318,10 +330,17 @@ def main(url):
         rtsp.do_teardown()
         print '\n^C received, Exit.'
 
+def play_ctrl_help():
+    help = COLOR_STR('In running, you can control play by input "forward","backward","begin","live","pause"\n',MAGENTA)
+    help += COLOR_STR('or "play" with "range" and "scale" parameter, such as "play range:npt=beginning- scale:2"\n',MAGENTA)
+    help += COLOR_STR('You can input "exit","teardown" or ctrl+c to quit\n',MAGENTA)
+    return help
+
 if __name__ == '__main__':
-    parser = OptionParser(usage='%prog [options] url')
+    usage = COLOR_STR('%prog [options] url\n\n',GREEN) + play_ctrl_help()
+    parser = OptionParser(usage=usage)
     parser.add_option('-t','--transport',dest='transport',default='udp_over_rtp',help='Set transport type when SETUP: tcp, udp, tcp_over_rtp, udp_over_rtp[default]')
-    parser.add_option('-d','--dest_ip',dest='dest_ip',help='Set dest ip of udp data transmission, default is 127.0.0.1')
+    parser.add_option('-d','--dest_ip',dest='dest_ip',help='Set dest ip of udp data transmission, default use same ip with rtsp')
     parser.add_option('-p','--client_port',dest='client_port',help='Set client port range of udp, default is "10014-10015"')
     parser.add_option('-n','--nat',dest='nat',help='Add "x-NAT" when DESCRIBE, arg format "192.168.1.100:20008"')
     parser.add_option('-r','--arq',dest='arq',action="store_true",help='Add "x-zmssRtxSdp:yes" when DESCRIBE')
@@ -329,9 +348,6 @@ if __name__ == '__main__':
     (options,args) = parser.parse_args()
     if len(args) < 1:
         parser.print_help()
-        PRINT('\n  In running, you can control play by input "forward","backward","begin","live","pause"', MAGENTA)
-        PRINT('  or "play" with "range" and "scale" parameter, such as "play range:npt=beginning- scale:2"', MAGENTA)
-        PRINT('  You can input "exit","teardown" or ctrl+c to quit\n', MAGENTA)
         sys.exit()
 
     if options.transport:   TRANSPORT_TYPE_LIST = options.transport.split(',')
