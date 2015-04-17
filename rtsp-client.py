@@ -1,11 +1,9 @@
 #!/usr/bin/python
 #-*- coding: UTF-8 -*-
-# Author: JiaSongsong
 # Date: 2015-04-09
 
 import sys, re, socket, threading, time, datetime, traceback
 from optparse import OptionParser
-from netaddr import *
 
 DEFAULT_SERVER_PORT = 1554
 TRANSPORT_TYPE_LIST = []
@@ -78,10 +76,10 @@ class RTSPClient(threading.Thread):
         except Exception, e:
             PRINT('Error: %s'%e,RED)
             traceback.print_exc()
-        finally:
-            self.running = False
-            self.playing = False
-            self._sock.close()
+
+        self.running = False
+        self.playing = False
+        self._sock.close()
 
     def _parse_url(self,url):
         '''解析url,返回(ip,port,target)三元组'''
@@ -135,10 +133,12 @@ class RTSPClient(threading.Thread):
     def _get_content_length(self,msg):
         '''从消息中解析Content-length'''
         m = re.search(r'[Cc]ontent-length:\s?(?P<len>\d+)',msg,re.S)
-        return 0 if m is None else int(m.group('len'))
+        return (m and int(m.group('len'))) or 0
 
     def _get_time_str(self):
-        return datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
+        # python 2.6以上才支持%f参数,为兼容低版本采用以下写法
+        dt = datetime.datetime.now()
+        return dt.strftime('%Y-%m-%d %H:%M:%S.') + str(dt.microsecond)
 
     def _process_response(self,msg):
         '''处理响应消息'''
@@ -191,7 +191,7 @@ class RTSPClient(threading.Thread):
     def _parse_track_id(self,sdp):
         '''从sdp中解析trackID=2形式的字符串'''
         m = re.search(r'a=control:(?P<trackid>[\w=\d]+)',sdp,re.S)
-        return '' if m is None else m.group('trackid')
+        return (m and m.group('trackid')) or ''
 
     def _next_seq(self):
         self._cseq += 1
@@ -201,14 +201,14 @@ class RTSPClient(threading.Thread):
         '''发送消息'''
         msg = '%s %s %s'%(method,url,RTSP_VERSION) + LINE_SPLIT_STR
         for (k,v) in headers.items():
-            msg += '{0}: {1}{2}'.format(k,v,LINE_SPLIT_STR)
+            msg += '%s: %s%s'%(k,str(v),LINE_SPLIT_STR)
         if self._session_id:
             msg += 'Session: %s'%self._session_id + LINE_SPLIT_STR
         msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR
         if method != 'GET_PARAMETER': PRINT(self._get_time_str() + LINE_SPLIT_STR + msg)
+        self._cseq_map[method] = self._cseq
         try:
             self._sock.send(msg)
-            self._cseq_map[method] = self._cseq
         except socket.error:
             errno, errstr = sys.exc_info()[:2]
             PRINT('Send msg error: %s'%errstr, RED)
@@ -231,7 +231,9 @@ class RTSPClient(threading.Thread):
         headers = {}
         headers['Accept'] = 'application/sdp'
         headers['User-Agent'] = DEFAULT_USERAGENT
-        if ENABLE_ARQ: headers['x-zmssRtxSdp'] = 'yes'
+        if ENABLE_ARQ:
+            headers['x-Retrans'] = 'yes'
+            headers['x-Burst'] = 'yes'
         if ENABLE_FEC: headers['x-zmssFecCDN'] = 'yes'
         if NAT_IP_PORT: headers['x-NAT'] = NAT_IP_PORT
         self._sendmsg('DESCRIBE',self._orig_url,headers)
@@ -273,7 +275,7 @@ import readline
 COMMANDS = ['play','range:','scale:','pause','forward','backward','begin','live','teardown','exit','help']
 def complete(text,state):
     options = [i for i in COMMANDS if i.startswith(text)]
-    return options[state] if state < len(options) else None
+    return (state < len(options) and options[state]) or None
 
 def input_cmd():
     readline.set_completer_delims(' \t\n')
@@ -341,9 +343,9 @@ if __name__ == '__main__':
     parser = OptionParser(usage=usage)
     parser.add_option('-t','--transport',dest='transport',default='udp_over_rtp',help='Set transport type when SETUP: tcp, udp, tcp_over_rtp, udp_over_rtp[default]')
     parser.add_option('-d','--dest_ip',dest='dest_ip',help='Set dest ip of udp data transmission, default use same ip with rtsp')
-    parser.add_option('-p','--client_port',dest='client_port',help='Set client port range of udp, default is "10014-10015"')
+    parser.add_option('-p','--client_port',dest='client_port',help='Set client port range when SETUP of udp, default is "10014-10015"')
     parser.add_option('-n','--nat',dest='nat',help='Add "x-NAT" when DESCRIBE, arg format "192.168.1.100:20008"')
-    parser.add_option('-r','--arq',dest='arq',action="store_true",help='Add "x-zmssRtxSdp:yes" when DESCRIBE')
+    parser.add_option('-r','--arq',dest='arq',action="store_true",help='Add "x-Retrans:yes" when DESCRIBE')
     parser.add_option('-f','--fec',dest='fec',action="store_true",help='Add "x-zmssFecCDN:yes" when DESCRIBE')
     (options,args) = parser.parse_args()
     if len(args) < 1:
