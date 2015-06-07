@@ -14,10 +14,10 @@ ENABLE_ARQ          = False
 ENABLE_FEC          = False
 
 TRANSPORT_TYPE_MAP  = {
-                        'tcp'           :   'MP2T/TCP;%s;interleaved=0-1,',
-                        'tcp_over_rtp'  :   'MP2T/RTP/TCP;%s;interleaved=0-1,',
-                        'udp'           :   'MP2T/UDP;%s;destination=%s;client_port=%s,',
-                        'udp_over_rtp'  :   'MP2T/RTP/UDP;%s;destination=%s;client_port=%s,'
+                        'ts_over_tcp'   :   'MP2T/TCP;%s;interleaved=0-1,',
+                        'rtp_over_tcp'  :   'MP2T/RTP/TCP;%s;interleaved=0-1,',
+                        'ts_over_udp'   :   'MP2T/UDP;%s;destination=%s;client_port=%s,',
+                        'rtp_over_udp'  :   'MP2T/RTP/UDP;%s;destination=%s;client_port=%s,'
                       }
 
 RTSP_VERSION        = 'RTSP/1.0'
@@ -221,7 +221,7 @@ class RTSPClient(threading.Thread):
             if t not in TRANSPORT_TYPE_MAP:
                 PRINT('Error param: %s'%t,RED)
                 sys.exit(1)
-            if t.startswith('tcp'):
+            if t.endswith('tcp'):
                 transport_str += TRANSPORT_TYPE_MAP[t]%ip_type
             else:
                 transport_str += TRANSPORT_TYPE_MAP[t]%(ip_type,DEST_IP,CLIENT_PORT_RANGE)
@@ -292,7 +292,7 @@ def exec_cmd(rtsp,cmd):
     if cmd in ('exit','teardown'):
         rtsp.do_teardown()
     elif cmd == 'pause':
-        CUR_SCALE = 1
+        CUR_SCALE = 1; CUR_RANGE = 'npt=now-'
         rtsp.do_pause()
     elif cmd == 'help':
         PRINT(play_ctrl_help())
@@ -341,7 +341,7 @@ def play_ctrl_help():
 if __name__ == '__main__':
     usage = COLOR_STR('%prog [options] url\n\n',GREEN) + play_ctrl_help()
     parser = OptionParser(usage=usage)
-    parser.add_option('-t','--transport',dest='transport',default='udp_over_rtp',help='Set transport type when SETUP: tcp, udp, tcp_over_rtp, udp_over_rtp[default]')
+    parser.add_option('-t','--transport',dest='transport',default='tcp_over_udp',help='Set transport type when SETUP: ts_over_tcp, ts_over_udp, rtp_over_tcp, rtp_over_udp[default]')
     parser.add_option('-d','--dest_ip',dest='dest_ip',help='Set dest ip of udp data transmission, default use same ip with rtsp')
     parser.add_option('-p','--client_port',dest='client_port',help='Set client port range when SETUP of udp, default is "10014-10015"')
     parser.add_option('-n','--nat',dest='nat',help='Add "x-NAT" when DESCRIBE, arg format "192.168.1.100:20008"')
