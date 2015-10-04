@@ -46,6 +46,7 @@ def PRINT(msg,color=WHITE):
 
 class RTSPClient(threading.Thread):
     def __init__(self,url):
+        global CUR_RANGE
         threading.Thread.__init__(self)
         self.setDaemon(True)
         self._recv_buf  = ''
@@ -53,10 +54,12 @@ class RTSPClient(threading.Thread):
         self._orig_url  = url
         self._cseq      = 0
         self._session_id= ''
-        self._cseq_map  = {'GET_PARAMETER':0,'DESCRIBE':0,'SETUP':0,'PLAY':0,'PAUSE':0,'TEARDOWN':0}
+        self._cseq_map  = {} # {CSeq:Method}映射
         self._server_ip,self._server_port,self._target = self._parse_url(url)
         if not self._server_ip or not self._target:
             PRINT('Invalid url: %s'%url,RED); sys.exit(1)
+        if '.sdp' not in self._target.lower():
+            CUR_RANGE = 'npt=0.00000-' # 点播从头开始
         self._connect_server()
         self._update_dest_ip()
         self.running    = True
@@ -65,7 +68,6 @@ class RTSPClient(threading.Thread):
         self.start()
 
     def run(self):
-        self.send_heart_beat_msg()
         try:
             while self.running:
                 msg = self.recv_msg()
@@ -84,7 +86,7 @@ class RTSPClient(threading.Thread):
     def _parse_url(self,url):
         '''解析url,返回(ip,port,target)三元组'''
         (ip,port,target) = ('',DEFAULT_SERVER_PORT,'')
-        m = re.match(r'[rtspRTSP:/]+(?P<ip>\d+\.\d+\.\d+.\d+)(:(?P<port>\d+))?(?P<target>.*)',url)
+        m = re.match(r'[rtspRTSP:/]+(?P<ip>(\d{1,3}\.){3}\d{1,3})(:(?P<port>\d+))?(?P<target>.*)',url)
         if m is not None:
             ip      = m.group('ip')
             port    = int(m.group('port'))
@@ -98,8 +100,8 @@ class RTSPClient(threading.Thread):
             self._sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM)
             self._sock.connect((self._server_ip,self._server_port))
             #PRINT('Connect [%s:%d] success!'%(self._server_ip,self._server_port), GREEN)
-        except socket.error, msg:
-            sys.stderr.write('ERROR: %s[%s:%d]'%(msg[1],self._server_ip,self._server_port))
+        except socket.error, e:
+            sys.stderr.write('ERROR: %s[%s:%d]'%(e,self._server_ip,self._server_port))
             traceback.print_exc()
             sys.exit(1)
 
@@ -118,9 +120,9 @@ class RTSPClient(threading.Thread):
                 more = self._sock.recv(2048)
                 if not more: break
                 self._recv_buf += more
-        except socket.error:
-            errno, errstr = sys.exc_info()[:2]
-            PRINT('Receive data error: %d-%s'%(errno,errstr),RED)
+        except socket.error, e:
+            PRINT('Receive data error: %s'%e,RED)
+            sys.exit(-1)
 
         msg = ''
         if self._recv_buf:
@@ -144,19 +146,20 @@ class RTSPClient(threading.Thread):
         '''处理响应消息'''
         status,headers,body = self._parse_response(msg)
         rsp_cseq = int(headers['cseq'])
-        if self._cseq_map['GET_PARAMETER'] != rsp_cseq:
+        if self._cseq_map[rsp_cseq] != 'GET_PARAMETER':
             PRINT(self._get_time_str() + '\n' + msg)
         if status == 302:
             self.location = headers['location']
         if status != 200:
             self.do_teardown()
-        if self._cseq_map['DESCRIBE'] == rsp_cseq:
+        if self._cseq_map[rsp_cseq] == 'DESCRIBE':
             track_id_str = self._parse_track_id(body)
             self.do_setup(track_id_str)
-        elif self._cseq_map['SETUP'] == rsp_cseq:
+        elif self._cseq_map[rsp_cseq] == 'SETUP':
             self._session_id = headers['session']
             self.do_play(CUR_RANGE,CUR_SCALE)
-        elif self._cseq_map['PLAY'] == rsp_cseq:
+            self.send_heart_beat_msg()
+        elif self._cseq_map[rsp_cseq] == 'PLAY':
             self.playing = True
 
     def _process_announce(self,msg):
@@ -166,7 +169,7 @@ class RTSPClient(threading.Thread):
         headers = self._parse_header_params(msg.splitlines()[1:])
         x_notice_val = int(headers['x-notice'])
         if x_notice_val in (X_NOTICE_EOS,X_NOTICE_BOS):
-            CUR_RANGE = 'npt=end-'; CUR_SCALE = 1
+            CUR_SCALE = 1
             self.do_play(CUR_RANGE,CUR_SCALE)
         elif x_notice_val == X_NOTICE_CLOSE:
             self.do_teardown()
@@ -199,19 +202,21 @@ class RTSPClient(threading.Thread):
 
     def _sendmsg(self,method,url,headers):
         '''发送消息'''
-        msg = '%s %s %s'%(method,url,RTSP_VERSION) + LINE_SPLIT_STR
+        msg = '%s %s %s'%(method,url,RTSP_VERSION)
+        headers['User-Agent'] = DEFAULT_USERAGENT
+        cseq = self._next_seq()
+        self._cseq_map[cseq] = method
+        headers['CSeq'] = str(cseq)
+        if self._session_id: headers['Session'] = self._session_id
         for (k,v) in headers.items():
-            msg += '%s: %s%s'%(k,str(v),LINE_SPLIT_STR)
-        if self._session_id:
-            msg += 'Session: %s'%self._session_id + LINE_SPLIT_STR
-        msg += 'CSeq: %d'%self._next_seq() + HEADER_END_STR
-        if method != 'GET_PARAMETER': PRINT(self._get_time_str() + LINE_SPLIT_STR + msg)
-        self._cseq_map[method] = self._cseq
+            msg += LINE_SPLIT_STR + '%s: %s'%(k,str(v))
+        msg += HEADER_END_STR # End headers
+        if method != 'GET_PARAMETER' or 'x-RetransSeq' in headers:
+            PRINT(self._get_time_str() + LINE_SPLIT_STR + msg)
         try:
             self._sock.send(msg)
-        except socket.error:
-            errno, errstr = sys.exc_info()[:2]
-            PRINT('Send msg error: %s'%errstr, RED)
+        except socket.error, e:
+            PRINT('Send msg error: %s'%e, RED)
 
     def _get_transport_type(self):
         '''获取SETUP时需要的Transport字符串参数'''
@@ -230,7 +235,6 @@ class RTSPClient(threading.Thread):
     def do_describe(self):
         headers = {}
         headers['Accept'] = 'application/sdp'
-        headers['User-Agent'] = DEFAULT_USERAGENT
         if ENABLE_ARQ:
             headers['x-Retrans'] = 'yes'
             headers['x-Burst'] = 'yes'
